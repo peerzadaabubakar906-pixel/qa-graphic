@@ -1,5 +1,5 @@
 """Vercel serverless function: POST /api/check  {src, bio, password}"""
-import io, os, re, json, socket, hmac, ipaddress, zipfile, base64, hashlib
+import io, os, re, json, socket, hmac, ipaddress, zipfile, base64, hashlib, time
 import urllib.request, urllib.parse, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
@@ -322,15 +322,28 @@ def ask_gemini(img, key, model):
     req = urllib.request.Request(
         "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % urllib.parse.quote(model),
         data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": key})
-    try:
-        with urllib.request.urlopen(req, timeout=40) as r:
-            j = json.load(r)
-    except urllib.error.HTTPError as e:
+    j = None
+    for attempt in range(4):
         try:
-            msg = json.loads(e.read())["error"]["message"]
-        except Exception:
-            msg = "HTTP %s" % e.code
-        raise RuntimeError(msg)
+            with urllib.request.urlopen(req, timeout=25) as r:
+                j = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read())["error"]["message"]
+            except Exception:
+                msg = "HTTP %s" % e.code
+            if e.code in (429, 500, 503, 504):
+                if attempt < 3:
+                    time.sleep(2 * (2 ** attempt))  # 2s, 4s, 8s
+                    continue
+                raise RuntimeError("Google abhi busy hai, kuch der baad dobara try karein. (%s)" % msg)
+            raise RuntimeError(msg)
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+            if attempt < 3:
+                time.sleep(2 * (2 ** attempt))
+                continue
+            raise RuntimeError("Google se connect nahi hua: %s" % e)
     text = "".join(p.get("text", "") for p in j["candidates"][0]["content"]["parts"])
     return json.loads(re.sub(r"```json|```", "", text).strip())
 
